@@ -42,9 +42,8 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { subdomain, clientId, clientSecret, redirectUri, authorizationCode } = body;
+    const { subdomain, clientId, clientSecret, redirectUri, authorizationCode, accessToken } = body;
 
-    // Save basic config
     await saveAuthConfig({
       subdomain,
       clientId,
@@ -52,7 +51,14 @@ export async function POST(request: NextRequest) {
       redirectUri,
     });
 
-    // If authorization code provided, exchange for tokens
+    if (accessToken) {
+      await saveAuthConfig({ accessToken });
+      await prisma.appConfig.deleteMany({
+        where: { key: { in: ["kommo_expires_at", "kommo_refresh_token"] } },
+      });
+      return NextResponse.json({ success: true, message: "Token salvo" });
+    }
+
     if (authorizationCode) {
       await exchangeCodeForTokens(authorizationCode);
       return NextResponse.json({ success: true, message: "Conectado ao Kommo com sucesso!" });

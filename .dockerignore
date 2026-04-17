@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.env
+.env.local
+.vercel
+npm-debug.log*
+yarn-debug.log*
+*.tsbuildinfo
+next-env.d.ts
+src/generated
+Dockerfile
+.dockerignore
+README.md
+.vscode
+.idea

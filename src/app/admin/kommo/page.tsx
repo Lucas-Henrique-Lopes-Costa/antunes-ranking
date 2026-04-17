@@ -14,9 +14,11 @@ export default function KommoConfigPage() {
     clientSecret: "",
     redirectUri: "",
     authorizationCode: "",
+    accessToken: "",
   });
   const [isConnected, setIsConnected] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
 
   useEffect(() => {
     fetch("/api/admin/config")
@@ -45,7 +47,12 @@ export default function KommoConfigPage() {
       if (res.ok) {
         toast.success(data.message);
         setIsConnected(true);
-        setForm((prev) => ({ ...prev, authorizationCode: "", clientSecret: "" }));
+        setForm((prev) => ({
+          ...prev,
+          authorizationCode: "",
+          clientSecret: "",
+          accessToken: "",
+        }));
       } else {
         toast.error(data.error);
       }
@@ -53,6 +60,23 @@ export default function KommoConfigPage() {
       toast.error("Erro ao salvar configurações");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleTest = async () => {
+    setTesting(true);
+    try {
+      const res = await fetch("/api/admin/config/test");
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(`Conexão ok — conta: ${data.account}`);
+      } else {
+        toast.error(data.error ?? "Falha ao testar");
+      }
+    } catch {
+      toast.error("Erro ao testar conexão");
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -66,43 +90,82 @@ export default function KommoConfigPage() {
       </div>
 
       {isConnected && (
-        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-emerald-400">
-          Conectado ao Kommo com sucesso. Os tokens são renovados automaticamente.
+        <div className="flex items-center justify-between rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-emerald-400">
+          <span>Token configurado. Clique em &quot;Testar conexão&quot; pra validar.</span>
+          <Button
+            onClick={handleTest}
+            disabled={testing}
+            variant="outline"
+            className="border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10"
+          >
+            {testing ? "Testando..." : "Testar conexão"}
+          </Button>
         </div>
       )}
 
       <Card className="border-white/10 bg-gray-900/60">
         <CardHeader>
-          <CardTitle className="text-white">Credenciais OAuth2</CardTitle>
+          <CardTitle className="text-white">Token de longa duração</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="subdomain">Subdomínio</Label>
-              <Input
-                id="subdomain"
-                placeholder="suaempresa"
-                value={form.subdomain}
-                onChange={(e) => setForm({ ...form, subdomain: e.target.value })}
-                className="border-white/10 bg-white/5"
-              />
-              <p className="text-xs text-gray-500">
-                A parte antes de .kommo.com na URL
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="redirectUri">Redirect URI</Label>
-              <Input
-                id="redirectUri"
-                placeholder="https://seudominio.com/api/auth/kommo/callback"
-                value={form.redirectUri}
-                onChange={(e) => setForm({ ...form, redirectUri: e.target.value })}
-                className="border-white/10 bg-white/5"
-              />
-            </div>
+          <div className="space-y-2">
+            <Label htmlFor="subdomain">Subdomínio</Label>
+            <Input
+              id="subdomain"
+              placeholder="suaempresa"
+              value={form.subdomain}
+              onChange={(e) => setForm({ ...form, subdomain: e.target.value })}
+              className="border-white/10 bg-white/5"
+            />
+            <p className="text-xs text-gray-500">
+              A parte antes de <code>.kommo.com</code> na URL (ex: <code>suaempresa</code>)
+            </p>
           </div>
 
+          <div className="space-y-2">
+            <Label htmlFor="accessToken">Access Token</Label>
+            <textarea
+              id="accessToken"
+              rows={6}
+              placeholder={isConnected ? "Token salvo — cole um novo pra substituir" : "Cole o token gerado no Kommo aqui"}
+              value={form.accessToken}
+              onChange={(e) => setForm({ ...form, accessToken: e.target.value })}
+              className="w-full rounded-md border border-white/10 bg-white/5 p-3 font-mono text-xs text-white placeholder:text-gray-600 focus:border-white/20 focus:outline-none"
+            />
+            <p className="text-xs text-gray-500">
+              Gere no Kommo em <strong>Integrações → sua integração → Access token de longa duração</strong>
+            </p>
+          </div>
+
+          <div className="flex gap-3">
+            <Button onClick={handleSave} disabled={saving} className="flex-1">
+              {saving ? "Salvando..." : "Salvar"}
+            </Button>
+            {form.accessToken && (
+              <Button
+                onClick={async () => {
+                  await handleSave();
+                  await handleTest();
+                }}
+                disabled={saving || testing}
+                variant="secondary"
+              >
+                Salvar e testar
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-white/10 bg-gray-900/60">
+        <CardHeader>
+          <CardTitle className="text-white">OAuth2 (avançado)</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-gray-500">
+            Use apenas se for fazer o fluxo OAuth2 completo com code + refresh token.
+            Para uso normal, prefira o &quot;Token de longa duração&quot; acima.
+          </p>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="clientId">Client ID</Label>
@@ -113,7 +176,6 @@ export default function KommoConfigPage() {
                 className="border-white/10 bg-white/5"
               />
             </div>
-
             <div className="space-y-2">
               <Label htmlFor="clientSecret">Client Secret</Label>
               <Input
@@ -128,36 +190,26 @@ export default function KommoConfigPage() {
           </div>
 
           <div className="space-y-2">
+            <Label htmlFor="redirectUri">Redirect URI</Label>
+            <Input
+              id="redirectUri"
+              placeholder="https://seudominio.com/api/auth/kommo/callback"
+              value={form.redirectUri}
+              onChange={(e) => setForm({ ...form, redirectUri: e.target.value })}
+              className="border-white/10 bg-white/5"
+            />
+          </div>
+
+          <div className="space-y-2">
             <Label htmlFor="authCode">Código de Autorização</Label>
             <Input
               id="authCode"
-              placeholder="Cole o authorization code do Kommo aqui"
+              placeholder="Authorization code (expira em 20min)"
               value={form.authorizationCode}
               onChange={(e) => setForm({ ...form, authorizationCode: e.target.value })}
               className="border-white/10 bg-white/5"
             />
-            <p className="text-xs text-gray-500">
-              O código expira em 20 minutos. Após salvar, os tokens serão obtidos automaticamente.
-            </p>
           </div>
-
-          <Button onClick={handleSave} disabled={saving} className="w-full">
-            {saving ? "Salvando..." : "Salvar e Conectar"}
-          </Button>
-        </CardContent>
-      </Card>
-
-      <Card className="border-white/10 bg-gray-900/60">
-        <CardHeader>
-          <CardTitle className="text-white">Como configurar</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3 text-sm text-gray-400">
-          <p>1. Acesse <strong className="text-gray-200">{form.subdomain || "suaempresa"}.kommo.com</strong></p>
-          <p>2. Vá em <strong className="text-gray-200">Configurações &rarr; Integrações</strong></p>
-          <p>3. Clique em <strong className="text-gray-200">Criar integração</strong></p>
-          <p>4. Preencha o nome e o Redirect URI acima</p>
-          <p>5. Copie o Client ID, Client Secret e Código de Autorização</p>
-          <p>6. Cole aqui e clique em &quot;Salvar e Conectar&quot;</p>
         </CardContent>
       </Card>
     </div>

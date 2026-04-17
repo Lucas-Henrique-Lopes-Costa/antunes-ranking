@@ -35,13 +35,7 @@ export default function AdminOverview() {
   const triggerSync = async () => {
     setSyncing(true);
     try {
-      const appSecret = prompt("Digite o APP_SECRET para autorizar:");
-      if (!appSecret) return;
-      await fetch("/api/sync", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${appSecret}` },
-      });
-      // Refresh logs
+      await fetch("/api/admin/sync", { method: "POST" });
       const res = await fetch("/api/sync/logs?limit=5");
       setLogs(await res.json());
     } catch {
