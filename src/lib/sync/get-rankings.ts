@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@/generated/prisma/client";
 import { appCache } from "@/lib/cache";
 import type { RankingsData, RankingEntry } from "@/types/rankings";
 import { startOfDay, startOfWeek, startOfMonth, endOfDay } from "date-fns";
@@ -23,6 +24,14 @@ function getPeriodRange(period: string, customStart?: string, customEnd?: string
   }
 }
 
+async function getStageIds(type: "MEETING_BOOKED" | "SALE_WON" | "SALE_LOST") {
+  const rows = await prisma.stage.findMany({
+    where: { stageType: type },
+    select: { kommoStatusId: true },
+  });
+  return rows.map((r) => r.kommoStatusId);
+}
+
 export async function getRankings(
   period = "month",
   customStart?: string,
@@ -34,85 +43,102 @@ export async function getRankings(
 
   const { start, end } = getPeriodRange(period, customStart, customEnd);
 
-  // SDR meetings
-  const sdrRaw = await prisma.lead.groupBy({
-    by: ["responsibleId"],
-    where: {
-      stageType: "MEETING_BOOKED",
-      responsible: { role: "SDR", active: true },
-      responsibleId: { not: null },
-      kommoUpdatedAt: { gte: start, lte: end },
-    },
-    _count: { id: true },
-    orderBy: { _count: { id: "desc" } },
-  });
+  const [meetingStageIds, saleStageIds] = await Promise.all([
+    getStageIds("MEETING_BOOKED"),
+    getStageIds("SALE_WON"),
+  ]);
 
-  // Closer sales
-  const closerRaw = await prisma.lead.groupBy({
-    by: ["responsibleId"],
-    where: {
-      stageType: "SALE_WON",
-      responsible: { role: "CLOSER", active: true },
-      responsibleId: { not: null },
-      closedAt: { gte: start, lte: end },
-    },
-    _count: { id: true },
-    _sum: { price: true },
-    orderBy: { _count: { id: "desc" } },
-  });
+  // SDR meetings: contar eventos onde estágio passou a ser MEETING_BOOKED
+  const sdrRaw = meetingStageIds.length
+    ? await prisma.leadEvent.groupBy({
+        by: ["userId"],
+        where: {
+          statusAfter: { in: meetingStageIds },
+          kommoCreatedAt: { gte: start, lte: end },
+          userId: { not: null },
+          user: { role: "SDR", active: true },
+        },
+        _count: { id: true },
+        orderBy: { _count: { id: "desc" } },
+      })
+    : [];
 
-  // Get user details
+  // Closer sales: contar eventos SALE_WON + somar price do lead atual
+  const closerRaw = saleStageIds.length
+    ? await prisma.$queryRaw<
+        Array<{ userId: string; count: bigint; sumPrice: Prisma.Decimal }>
+      >`
+        SELECT le."userId" AS "userId",
+               COUNT(*)::bigint AS "count",
+               COALESCE(SUM(l.price), 0) AS "sumPrice"
+        FROM lead_events le
+        JOIN kommo_users u ON u.id = le."userId"
+        LEFT JOIN leads l ON l."kommoLeadId" = le."kommoLeadId"
+        WHERE le."statusAfter" IN (${Prisma.join(saleStageIds)})
+          AND le."kommoCreatedAt" >= ${start}
+          AND le."kommoCreatedAt" <= ${end}
+          AND le."userId" IS NOT NULL
+          AND u.role = 'CLOSER'
+          AND u.active = true
+        GROUP BY le."userId"
+      `
+    : [];
+
+  // Dedupe userIds (eventos múltiplos no mesmo lead)
   const userIds = [
     ...new Set([
-      ...sdrRaw.map((r) => r.responsibleId!),
-      ...closerRaw.map((r) => r.responsibleId!),
+      ...sdrRaw.map((r) => r.userId!).filter(Boolean),
+      ...closerRaw.map((r) => r.userId).filter(Boolean),
     ]),
   ];
 
   const users = await prisma.kommoUser.findMany({
     where: { id: { in: userIds } },
   });
-
   const userMap = new Map(users.map((u) => [u.id, u]));
 
-  // Build SDR ranking
   const sdrMeetings: RankingEntry[] = sdrRaw
-    .filter((r) => r.responsibleId && userMap.has(r.responsibleId))
+    .filter((r) => r.userId && userMap.has(r.userId))
     .map((r, i) => ({
-      userId: r.responsibleId!,
-      kommoUserId: userMap.get(r.responsibleId!)!.kommoUserId,
-      name: userMap.get(r.responsibleId!)!.name,
+      userId: r.userId!,
+      kommoUserId: userMap.get(r.userId!)!.kommoUserId,
+      name: userMap.get(r.userId!)!.name,
       position: i + 1,
       meetingsCount: r._count.id,
     }));
 
-  // Build Closer rankings (sort by count)
-  const closerSalesCount: RankingEntry[] = [...closerRaw]
-    .sort((a, b) => b._count.id - a._count.id)
-    .filter((r) => r.responsibleId && userMap.has(r.responsibleId))
-    .map((r, i) => ({
-      userId: r.responsibleId!,
-      kommoUserId: userMap.get(r.responsibleId!)!.kommoUserId,
-      name: userMap.get(r.responsibleId!)!.name,
-      position: i + 1,
-      salesCount: r._count.id,
-      salesValue: Number(r._sum.price ?? 0),
+  const closerAll = closerRaw
+    .filter((r) => userMap.has(r.userId))
+    .map((r) => ({
+      userId: r.userId,
+      kommoUserId: userMap.get(r.userId)!.kommoUserId,
+      name: userMap.get(r.userId)!.name,
+      count: Number(r.count),
+      value: Number(r.sumPrice ?? 0),
     }));
 
-  // Build Closer rankings (sort by value)
-  const closerSalesValue: RankingEntry[] = [...closerRaw]
-    .sort((a, b) => Number(b._sum.price ?? 0) - Number(a._sum.price ?? 0))
-    .filter((r) => r.responsibleId && userMap.has(r.responsibleId))
+  const closerSalesCount: RankingEntry[] = [...closerAll]
+    .sort((a, b) => b.count - a.count)
     .map((r, i) => ({
-      userId: r.responsibleId!,
-      kommoUserId: userMap.get(r.responsibleId!)!.kommoUserId,
-      name: userMap.get(r.responsibleId!)!.name,
+      userId: r.userId,
+      kommoUserId: r.kommoUserId,
+      name: r.name,
       position: i + 1,
-      salesCount: r._count.id,
-      salesValue: Number(r._sum.price ?? 0),
+      salesCount: r.count,
+      salesValue: r.value,
     }));
 
-  // Last sync
+  const closerSalesValue: RankingEntry[] = [...closerAll]
+    .sort((a, b) => b.value - a.value)
+    .map((r, i) => ({
+      userId: r.userId,
+      kommoUserId: r.kommoUserId,
+      name: r.name,
+      position: i + 1,
+      salesCount: r.count,
+      salesValue: r.value,
+    }));
+
   const lastSyncLog = await prisma.syncLog.findFirst({
     where: { status: "SUCCESS" },
     orderBy: { finishedAt: "desc" },
@@ -127,7 +153,6 @@ export async function getRankings(
     periodEnd: end.toISOString(),
   };
 
-  // Cache for 30 seconds
   appCache.set(cacheKey, result, 30_000);
 
   return result;

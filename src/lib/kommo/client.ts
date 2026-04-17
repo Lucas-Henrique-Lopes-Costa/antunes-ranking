@@ -55,8 +55,8 @@ export async function kommoFetch<T>(
       continue;
     }
 
-    // Token expired — try refresh once
-    if (response.status === 401 && attempt === 0) {
+    // Token expired — try refresh once (apenas se tiver refresh_token, ou seja, fluxo OAuth2)
+    if (response.status === 401 && attempt === 0 && config.refreshToken) {
       console.warn("Token expirado, renovando...");
       await refreshAccessToken();
       continue;

@@ -6,46 +6,66 @@ interface CalculateOptions {
   periodEnd: Date;
 }
 
+async function getStageIds(type: "MEETING_BOOKED" | "SALE_WON" | "SALE_LOST") {
+  const rows = await prisma.stage.findMany({
+    where: { stageType: type },
+    select: { kommoStatusId: true },
+  });
+  return rows.map((r) => r.kommoStatusId);
+}
+
 export async function calculateAndSaveRankings(options: CalculateOptions) {
   const { periodStart, periodEnd } = options;
   const now = new Date();
   const snapshotDate = new Date(now.toISOString().split("T")[0]);
   const snapshotHour = now.getHours();
 
-  // SDR meetings ranking
-  const sdrMeetings = await prisma.lead.groupBy({
-    by: ["responsibleId"],
-    where: {
-      stageType: "MEETING_BOOKED",
-      responsible: { role: "SDR", active: true },
-      responsibleId: { not: null },
-      kommoUpdatedAt: { gte: periodStart, lte: periodEnd },
-    },
-    _count: { id: true },
-  });
+  const [meetingStageIds, saleStageIds] = await Promise.all([
+    getStageIds("MEETING_BOOKED"),
+    getStageIds("SALE_WON"),
+  ]);
 
-  // Closer sales ranking
-  const closerSales = await prisma.lead.groupBy({
-    by: ["responsibleId"],
-    where: {
-      stageType: "SALE_WON",
-      responsible: { role: "CLOSER", active: true },
-      responsibleId: { not: null },
-      closedAt: { gte: periodStart, lte: periodEnd },
-    },
-    _count: { id: true },
-    _sum: { price: true },
-  });
+  const sdrMeetings = meetingStageIds.length
+    ? await prisma.leadEvent.groupBy({
+        by: ["userId"],
+        where: {
+          statusAfter: { in: meetingStageIds },
+          kommoCreatedAt: { gte: periodStart, lte: periodEnd },
+          userId: { not: null },
+          user: { role: "SDR", active: true },
+        },
+        _count: { id: true },
+      })
+    : [];
 
-  // Save snapshots
+  const closerSales = saleStageIds.length
+    ? await prisma.$queryRaw<
+        Array<{ userId: string; count: bigint; sumPrice: Prisma.Decimal }>
+      >`
+        SELECT le."userId" AS "userId",
+               COUNT(*)::bigint AS "count",
+               COALESCE(SUM(l.price), 0) AS "sumPrice"
+        FROM lead_events le
+        JOIN kommo_users u ON u.id = le."userId"
+        LEFT JOIN leads l ON l."kommoLeadId" = le."kommoLeadId"
+        WHERE le."statusAfter" IN (${Prisma.join(saleStageIds)})
+          AND le."kommoCreatedAt" >= ${periodStart}
+          AND le."kommoCreatedAt" <= ${periodEnd}
+          AND le."userId" IS NOT NULL
+          AND u.role = 'CLOSER'
+          AND u.active = true
+        GROUP BY le."userId"
+      `
+    : [];
+
   const snapshots: Prisma.RankingSnapshotCreateManyInput[] = [];
 
   for (const entry of sdrMeetings) {
-    if (!entry.responsibleId) continue;
+    if (!entry.userId) continue;
     snapshots.push({
       snapshotDate,
       snapshotHour,
-      userId: entry.responsibleId,
+      userId: entry.userId,
       userRole: "SDR",
       meetingsCount: entry._count.id,
       salesCount: 0,
@@ -56,21 +76,20 @@ export async function calculateAndSaveRankings(options: CalculateOptions) {
   }
 
   for (const entry of closerSales) {
-    if (!entry.responsibleId) continue;
+    if (!entry.userId) continue;
     snapshots.push({
       snapshotDate,
       snapshotHour,
-      userId: entry.responsibleId,
+      userId: entry.userId,
       userRole: "CLOSER",
       meetingsCount: 0,
-      salesCount: entry._count.id,
-      salesValue: entry._sum.price ?? new Prisma.Decimal(0),
+      salesCount: Number(entry.count),
+      salesValue: entry.sumPrice ?? new Prisma.Decimal(0),
       periodStart,
       periodEnd,
     });
   }
 
-  // Upsert snapshots (avoid duplicates if sync runs multiple times in same hour)
   for (const snap of snapshots) {
     await prisma.rankingSnapshot.upsert({
       where: {

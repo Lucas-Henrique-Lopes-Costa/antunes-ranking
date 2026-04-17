@@ -4,6 +4,7 @@ import { fetchKommoUsers } from "@/lib/kommo/users";
 import { fetchKommoPipelines } from "@/lib/kommo/pipelines";
 import { processLeads } from "./leads-processor";
 import { calculateAndSaveRankings } from "./ranking-calculator";
+import { syncEvents } from "./events-processor";
 import { appCache } from "@/lib/cache";
 import {
   startOfMonth,
@@ -95,6 +96,13 @@ export async function runSync() {
     // 4. Process leads
     const { created, updated } = await processLeads(leads);
     console.log(`[Sync] Leads processados: ${created} criados, ${updated} atualizados`);
+
+    // 4b. Sync events (histórico de movimentação — base do ranking)
+    console.log("[Sync] Buscando eventos do Kommo...");
+    const eventResult = await syncEvents();
+    console.log(
+      `[Sync] ${eventResult.stored} eventos armazenados (${eventResult.fetched} recebidos)`
+    );
 
     // 5. Calculate rankings for current month
     const now = new Date();
