@@ -1,15 +1,141 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum UserRole {
+  SDR
+  CLOSER
+  MANAGER
+  UNASSIGNED
+}
+
+enum StageType {
+  MEETING_BOOKED
+  SALE_WON
+  SALE_LOST
+  OTHER
+}
+
+enum SyncStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+model KommoUser {
+  id          String   @id @default(cuid())
+  kommoUserId Int      @unique
+  name        String
+  email       String?
+  role        UserRole @default(UNASSIGNED)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  leads          Lead[]
+  rankingSnaps   RankingSnapshot[]
+
+  @@map("kommo_users")
+}
+
+model Pipeline {
+  id              String   @id @default(cuid())
+  kommoPipelineId Int      @unique
+  name            String
+  monitored       Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  stages Stage[]
+  leads  Lead[]
+
+  @@map("pipelines")
+}
+
+model Stage {
+  id            String    @id @default(cuid())
+  pipelineId    String
+  pipeline      Pipeline  @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  kommoStatusId Int
+  name          String
+  stageType     StageType @default(OTHER)
+  createdAt     DateTime  @default(now())
+
+  @@unique([pipelineId, kommoStatusId])
+  @@map("stages")
+}
+
+model Lead {
+  id              String     @id @default(cuid())
+  kommoLeadId     Int        @unique
+  name            String?
+  price           Decimal    @default(0) @db.Decimal(12, 2)
+  responsibleId   String?
+  responsible     KommoUser? @relation(fields: [responsibleId], references: [id], onDelete: SetNull)
+  pipelineId      String?
+  pipeline        Pipeline?  @relation(fields: [pipelineId], references: [id], onDelete: SetNull)
+  kommoStatusId   Int
+  stageType       StageType  @default(OTHER)
+  kommoCreatedAt  DateTime?
+  kommoUpdatedAt  DateTime?
+  closedAt        DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  @@index([responsibleId])
+  @@index([stageType])
+  @@index([closedAt])
+  @@index([kommoUpdatedAt])
+  @@map("leads")
+}
+
+model RankingSnapshot {
+  id            String   @id @default(cuid())
+  snapshotDate  DateTime @db.Date
+  snapshotHour  Int
+  userId        String
+  user          KommoUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userRole      UserRole
+  meetingsCount Int      @default(0)
+  salesCount    Int      @default(0)
+  salesValue    Decimal  @default(0) @db.Decimal(12, 2)
+  periodStart   DateTime
+  periodEnd     DateTime
+  createdAt     DateTime @default(now())
+
+  @@unique([snapshotDate, snapshotHour, userId, periodStart, periodEnd])
+  @@index([snapshotDate, snapshotHour])
+  @@index([userId])
+  @@map("ranking_snapshots")
+}
+
+model SyncLog {
+  id           String     @id @default(cuid())
+  startedAt    DateTime   @default(now())
+  finishedAt   DateTime?
+  status       SyncStatus @default(RUNNING)
+  leadsFetched Int        @default(0)
+  leadsCreated Int        @default(0)
+  leadsUpdated Int        @default(0)
+  errorMessage String?
+  durationMs   Int?
+  createdAt    DateTime   @default(now())
+
+  @@index([startedAt])
+  @@map("sync_logs")
+}
+
+model AppConfig {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  @@map("app_configs")
 }
